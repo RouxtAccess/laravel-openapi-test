@@ -12,7 +12,7 @@ use ByJG\ApiTools\Exception\InvalidRequestException;
 use ByJG\ApiTools\Exception\NotMatchedException;
 use ByJG\ApiTools\Exception\PathNotFoundException;
 use ByJG\ApiTools\Exception\StatusCodeNotMatchedException;
-use ByJG\Util\Psr7\MessageException;
+use GuzzleHttp\Exception\RequestException;
 use function PHPUnit\Framework\assertTrue;
 
 trait AssertRequestAgainstSchema
@@ -42,7 +42,7 @@ trait AssertRequestAgainstSchema
      * @throws NotMatchedException
      * @throws PathNotFoundException
      * @throws StatusCodeNotMatchedException
-     * @throws MessageException
+     * @throws RequestException
      */
     public function assertRequest(AbstractRequester $request)
     {

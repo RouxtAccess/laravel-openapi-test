@@ -4,7 +4,7 @@
 namespace RouxtAccess\OpenApi\Testing\Laravel\Traits;
 
 use ByJG\ApiTools\Base\Schema;
-use ByJG\Util\Psr7\MessageException;
+use GuzzleHttp\Exception\RequestException;
 use Symfony\Component\HttpFoundation\Response;
 use RouxtAccess\OpenApi\Testing\Laravel\LaravelRequester;
 
@@ -21,7 +21,7 @@ trait InteractsWithOpenApi
 
 
     /**
-     * @throws MessageException
+     * @throws RequestException
      */
     protected function setUpOpenApiTester(): void
     {

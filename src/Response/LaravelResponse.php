@@ -2,10 +2,9 @@
 
 namespace RouxtAccess\OpenApi\Testing\Laravel\Response;
 
-use ByJG\ApiTools\Response\ResponseInterface;
 use Symfony\Component\HttpFoundation\Response;
 
-class LaravelResponse implements ResponseInterface
+class LaravelResponse
 {
     protected $response;
 

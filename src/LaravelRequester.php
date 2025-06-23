@@ -10,40 +10,41 @@ use ByJG\ApiTools\Exception\InvalidDefinitionException;
 use ByJG\ApiTools\Exception\InvalidRequestException;
 use ByJG\ApiTools\Exception\NotMatchedException;
 use ByJG\ApiTools\Exception\PathNotFoundException;
+use ByJG\ApiTools\Exception\RequiredArgumentNotFound;
 use ByJG\ApiTools\Exception\StatusCodeNotMatchedException;
-use ByJG\Util\Helper\RequestJson;
-use ByJG\Util\Psr7\MessageException;
 use ByJG\Util\Uri;
+use GuzzleHttp\Psr7\Request;
+use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Str;
 use JsonException;
 use Psr\Http\Message\RequestInterface;
-use Symfony\Component\HttpFoundation\Response;
+use Psr\Http\Message\ResponseInterface;
 use Tests\TestCase;
 
 class LaravelRequester extends AbstractRequester
 {
-    protected Response $response;
+    protected ResponseInterface $response;
     protected TestCase $testCase;
 
     /**
      * @noinspection PhpMissingParentConstructorInspection
      * @noinspection MagicMethodsValidityInspection
      * @param  TestCase  $testCase
-     * @throws MessageException
+     * @throws RequestException
      */
     public function __construct(TestCase $testCase)
     {
-        $this->withPsr7Request(RequestJson::build(new Uri("/"), 'get', "[]"));
+        $this->withPsr7Request(new Request('GET', new Uri("/"), [], "[]"));
         $this->testCase = $testCase;
     }
 
 
     /**
      * @param  RequestInterface  $request
-     * @return Response
+     * @return ResponseInterface
      * @throws JsonException
      */
-    protected function handleRequest(RequestInterface $request) : Response
+    protected function handleRequest(RequestInterface $request) : ResponseInterface
     {
         $testResponse = $this->testCase->json(
             $request->getMethod(),
@@ -92,7 +93,7 @@ class LaravelRequester extends AbstractRequester
      *
      * @return string
      */
-    protected function formatServerHeaderKey($name): string
+    protected function formatServerHeaderKey(string $name): string
     {
         if ($name !== 'CONTENT_TYPE' && $name !== 'REMOTE_ADDR' && !Str::startsWith($name, 'HTTP_')) {
             return 'HTTP_'.$name;
@@ -102,10 +103,10 @@ class LaravelRequester extends AbstractRequester
     }
 
     /**
-     * @return Response
+     * @return ResponseInterface
      * @throws JsonException
      */
-    public function send() : Response
+    public function send() : ResponseInterface
     {
         // Process URI based on the OpenAPI schema
         $uriSchema = new Uri($this->schema->getServerUrl());
@@ -137,56 +138,71 @@ class LaravelRequester extends AbstractRequester
 
     /**
      * @return bool
+     * @throws DefinitionNotFoundException
+     * @throws GenericSwaggerException
+     * @throws HttpMethodNotFoundException
+     * @throws InvalidDefinitionException
      * @throws InvalidRequestException
      * @throws JsonException
-     * @throws HttpMethodNotFoundException
+     * @throws NotMatchedException
      * @throws PathNotFoundException
+     * @throws RequiredArgumentNotFound
      */
     public function validateRequest(): bool
     {
-        // Prepare Body to Match Against Specification
         $requestBody = $this->psr7Request->getBody();
-        if ($requestBody !== null) {
-            $requestBody = $requestBody->getContents();
+        $contentType = $this->psr7Request->getHeaderLine("content-type");
+        $requestContents = null;
 
-            $contentType = $this->psr7Request->getHeaderLine("content-type");
-            if (empty($contentType) || strpos($contentType, "application/json") !== false) {
-                $requestBody = json_decode($requestBody, true, 512, JSON_THROW_ON_ERROR);
-            } elseif (strpos($contentType, "multipart/") !== false) {
-                $requestBody = $this->parseMultiPartForm($contentType, $requestBody);
+        // Get request body if exists
+        if ($requestBody !== null) {
+            $requestContents = $requestBody->getContents();
+
+            if (empty($contentType) || str_contains($contentType, "application/json")) {
+                $requestContents = json_decode($requestContents, true, 512, JSON_THROW_ON_ERROR);
+            } elseif (str_contains($contentType, "multipart/")) {
+                $requestContents = $this->parseMultiPartForm($contentType, $requestContents);
             } else {
                 throw new InvalidRequestException("Cannot handle Content Type '{$contentType}'");
             }
         }
 
         // Check if the body is the expected before request
-        $bodyRequestDef = $this->schema->getRequestParameters($this->psr7Request->getUri()->getPath(), $this->psr7Request->getMethod());
-        $bodyRequestDef->match($requestBody);
+        $bodyRequestDef = $this->schema->getRequestParameters(
+            $this->psr7Request->getUri()->getPath(), 
+            $this->psr7Request->getMethod()
+        );
+        $bodyRequestDef->match($requestContents);
+        
         return true;
     }
 
     /**
-     * @param  Response  $response
-     * @param  null  $status
+     * @param ResponseInterface $response
+     * @param int|null $status
      * @return bool
-     * @throws JsonException
-     * @throws NotMatchedException
-     * @throws StatusCodeNotMatchedException
      * @throws DefinitionNotFoundException
      * @throws GenericSwaggerException
      * @throws HttpMethodNotFoundException
      * @throws InvalidDefinitionException
+     * @throws InvalidRequestException
+     * @throws JsonException
+     * @throws NotMatchedException
      * @throws PathNotFoundException
+     * @throws StatusCodeNotMatchedException
+     * @throws RequiredArgumentNotFound
      */
-    public function validateResponse(Response $response, $status = null): bool
+    public function validateResponse(ResponseInterface $response, ?int $status = null): bool
     {
-        $responseHeaderBag = $response->headers;
-        $responseBodyStr = (string) $response->getContent();
-        $responseBody = json_decode($responseBodyStr, true, 512, JSON_THROW_ON_ERROR);
+        $responseHeaders = $response->getHeaders();
+        $responseBodyStr = (string) $response->getBody();
+        $responseBody = !empty($responseBodyStr) ? 
+            json_decode($responseBodyStr, true, 512, JSON_THROW_ON_ERROR) : 
+            null;
         $statusReturned = $response->getStatusCode();
 
         // Assert results
-        if ($status !== $statusReturned) {
+        if ($status !== null && $status !== $statusReturned) {
             throw new StatusCodeNotMatchedException(
                 "Status code not matched: Expected {$status}, got {$statusReturned}",
                 $responseBody
@@ -196,26 +212,27 @@ class LaravelRequester extends AbstractRequester
         $bodyResponseDef = $this->schema->getResponseParameters(
             $this->psr7Request->getUri()->getPath(),
             $this->psr7Request->getMethod(),
-            $status
+            $statusReturned
         );
         $bodyResponseDef->match($responseBody);
 
         foreach ($this->assertHeader as $key => $value) {
-            if ($responseHeaderBag->get($key)) {
+      if (!array_key_exists($key, $responseHeaders) || $responseHeaders[$key] !== $value) {
                 throw new NotMatchedException(
-                    "Does not exists header '$key' with value '$value'",
-                    $responseHeaderBag->all(),
+                    "Header validation failed for '$key' with value '$value'",
+                    $responseHeaders
                 );
             }
         }
 
         if (!empty($responseBodyStr)) {
             foreach ($this->assertBody as $item) {
-                if (strpos($responseBodyStr, $item) === false) {
+                if (!str_contains($responseBodyStr, $item)) {
                     throw new NotMatchedException("Body does not contain '{$item}'");
                 }
             }
         }
+        
         return true;
     }
 }
